@@ -52,11 +52,8 @@ def build_siamese_model(configs):
     n_fc_layers = configs['n_fc_layers']
     fc_dim = configs['fc_dim']
     dpout_fc = configs['dpout_fc']
-    # nonlinear_fc = configs['nonlinear_fc']
 
     optimizer = configs['optimizer']
-    # decay = configs['decay']
-    # minlr = configs['minlr']
 
     seed = configs['seed']
 
@@ -69,7 +66,12 @@ def build_siamese_model(configs):
                           unit_forget_bias=True,
                           kernel_initializer='he_normal',
                           kernel_regularizer='l2',
-                          name='lstm_layer')
+                          name='rnn')
+    elif rnn_type == 'GRU':
+        rnn = layers.GRU(enc_dim,
+                         kernel_initializer='he_normal',
+                         kernel_regularizer='l2',
+                         name='rnn')
     else:
         raise Exception(f'Encoder type ({encoder_type}) not supported!')
 
@@ -113,5 +115,3 @@ def build_siamese_model(configs):
 
 if __name__ == '__main__':
     pass
-    # model = build_siamese_model(input_dim=50)
-    # print(model.summary())

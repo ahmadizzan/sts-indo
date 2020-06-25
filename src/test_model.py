@@ -1,3 +1,4 @@
+import argparse
 import logging
 
 import numpy as np
@@ -7,10 +8,14 @@ from tensorflow.keras import layers, \
                              models, \
                              Input
 
-from model import pearson_correlation
-from main import encode, load_word_embedding, FASTEXT_PATH, STS_DATA_BASE_PATH
+from model import compute_pearson, compute_spearman, pearson_correlation, spearman_correlation, correlation_coefficient_loss
+from train_model import encode, load_word_embedding, FASTEXT_PATH, STS_DATA_BASE_PATH, preprocess_data
 
 logging.basicConfig(level=logging.INFO)
+
+parser = argparse.ArgumentParser(description='STS training')
+parser.add_argument("--model-path", type=str, default=None, help="Model path")
+params, _ = parser.parse_known_args()
 
 def compute_similarity(sent1, sent2, word_vec, model):
     sent1_encoded = encode(sent1, word_vec, feature_size=feature_size)
@@ -44,39 +49,18 @@ if __name__ == '__main__':
 
     logging.info('Loading pre-trained model')
     model = models.load_model(
-        'models/id_v5.h5',
-        custom_objects={'pearson_correlation': pearson_correlation})
-
-    layer_input = model.get_layer('left_input').input
-    layer_output = model.get_layer('bidirectional').output
-    intermediate_model = models.Model(inputs=layer_input, outputs=layer_output)
-
-    # sentence_pairs = [
-    #     ('Berapa lama Anda bisa menyimpan cokelat di dalam freezer?', 'Berapa lama saya bisa menyimpan adonan roti di lemari es?'),
-    #     ('restoran itu adalah tempat saya makan', 'saya makan siang di restoran'),
-    #     ('nilai saya jelek', 'ipk tidak menentukan kesuksesan'),
-    #     ('aku bermain bola', 'kucing mengejar seekor tikus')
-    # ]
-
-    # logging.info('Testing samples')
-
-    # for sent1, sent2 in sentence_pairs:
-    #     cosine_sim = compute_similarity(sent1, sent2, word_vec, intermediate_model)
-    #     logging.info('=' * 50)
-    #     logging.info(f'sent1: {sent1}')
-    #     logging.info(f'sent2: {sent2}')
-    #     logging.info(f'Cosine similarity: {cosine_sim}')    
+        params.model_path,
+        custom_objects={
+            'correlation_coefficient_loss': correlation_coefficient_loss,
+            'pearson_correlation': pearson_correlation,
+            'spearman_correlation': spearman_correlation
+        })
 
     sts = pd.read_csv(f'{STS_DATA_BASE_PATH}/test.tsv', sep='\t')
-    # sts = sts.reindex(np.random.permutation(sts.index))
+    X1, X2, y = preprocess_data(sts, word_vec, 300)
 
-    sent1_list = sts['text1_id'].values
-    sent2_list = sts['text2_id'].values
-    scores = sts['score'].values
-    predictions = []
-    for sent1, sent2 in zip(sent1_list, sent2_list):
-        sim = compute_similarity(sent1, sent2, word_vec, intermediate_model)
-        predictions.append(sim)
-    
-    pearson = compute_pearson(scores, predictions)
-    logging.info(f'Pearson correlation: {pearson}')
+    logging.info('Predicting labels...')
+    predictions = model.predict([X1, X2]).reshape(-1)
+
+    print('Pearson:', compute_pearson(y, predictions))
+    print('Spearman:', compute_spearman(y, predictions))

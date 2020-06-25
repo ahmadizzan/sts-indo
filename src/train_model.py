@@ -2,18 +2,21 @@ import argparse
 import io
 import logging
 import json
+import time
 
 import nltk
 import numpy as np
 import pandas as pd
 
-from model import build_siamese_model
+from model import build_siamese_model, compute_pearson, compute_spearman
 from sklearn.model_selection import train_test_split
+from tensorflow.keras.callbacks import EarlyStopping
 
 logging.basicConfig(level=logging.INFO)
 
 WORD_EMBEDDING_PATH = '/Users/ahmadizzan/data/word-embeddings'
-FASTEXT_PATH = f'{WORD_EMBEDDING_PATH}/fastext-wiki.id.vec'
+# FASTEXT_PATH = f'{WORD_EMBEDDING_PATH}/fastext-wiki.id.vec'
+FASTEXT_PATH = f'{WORD_EMBEDDING_PATH}/wiki-news-300d-1M.vec'
 
 STS_DATA_BASE_PATH = '/Users/ahmadizzan/Academics/ta/data/final-data'
 STS_DATA_PATH = f'{STS_DATA_BASE_PATH}/train.tsv'
@@ -41,6 +44,7 @@ parser.add_argument("--optimizer", type=str, default="adam", help="adam or sgd")
 # model
 parser.add_argument("--encoder_type", type=str, default='LSTM', help="see list of encoders")
 parser.add_argument("--encoder_bidirectional", type=int, default=0, help="see list of encoders")
+parser.add_argument("--encoder_attention", type=int, default=0, help="see list of encoders")
 parser.add_argument("--enc_dim", type=int, default=100, help="encoder nhid dimension")
 parser.add_argument("--fc_dim", type=int, default=32, help="nhid of fc layers")
 parser.add_argument("--n_fc_layers", type=int, default=3, help="num of fc layers")
@@ -71,6 +75,7 @@ configs = {
     # Model.
     'encoder_type': params.encoder_type,
     'encoder_bidirectional': params.encoder_bidirectional,
+    'encoder_attention': params.encoder_attention,
     'enc_dim': params.enc_dim,
     'fc_dim': params.fc_dim,
     'n_fc_layers': params.n_fc_layers,
@@ -81,7 +86,7 @@ configs = {
     'word_emb_dim': params.word_emb_dim
 }
 
-def encode(sentence, word_vec, feature_size=50, max_len=50):
+def encode(sentence, word_vec, feature_size=50, max_len=30):
     words = nltk.word_tokenize(sentence)
     embeddings = []
 
@@ -111,8 +116,8 @@ def load_word_embedding(embedding_path):
 
 def preprocess_data(sts_df, word_vec, feature_size):
     data = sts_df
-    text1 = data['text1_id'].apply(lambda x: x.lower()).values
-    text2 = data['text2_id'].apply(lambda x: x.lower()).values
+    text1 = data['text1'].apply(lambda x: x.lower()).values
+    text2 = data['text2'].apply(lambda x: x.lower()).values
     scores = data['score'].values
 
     logging.info('Encoding text into embeddings')
@@ -142,39 +147,95 @@ def print_train_history(history):
 
 
 def main():
+    time_log = {}
+
     logging.info('Loading STS dataset')
+    load_sts_start_time = time.time()
     train_data = pd.read_csv(params.datapath, sep='\t')
+    load_sts_start_time = time.time() - load_sts_start_time
+    time_log['load_sts'] = load_sts_start_time
 
     logging.info('Loading word embedding data')
+    load_word_embed = time.time()
     word_vec = load_word_embedding(params.word_emb_path)
+    load_word_embed = time.time() - load_word_embed
+    time_log['load_word_emb'] = load_word_embed
 
     logging.info(f'Data preprocessing')
+    load_preproc_time = time.time()
     train_text1_encoded, train_text2_encoded, train_scaled_scores = preprocess_data(
         train_data, word_vec, params.word_emb_dim)
+    load_preproc_time = time.time() - load_preproc_time
+    time_log['load_preproc_time'] = load_preproc_time
 
+    split_data_time = time.time()
     X1_train, X1_val, X2_train, X2_val, y_train, y_val = train_test_split(
         train_text1_encoded, train_text2_encoded, train_scaled_scores,
         test_size=0.2, shuffle=False)
-
+    split_data_time = time.time() - split_data_time
+    time_log['split_data_time'] = split_data_time
 
     logging.info('Building siamese ML model')
+    build_model_time = time.time()
     model = build_siamese_model(configs)
+    print(model.summary())
+    build_model_time = time.time() - build_model_time
+    time_log['build_model_time'] = build_model_time
 
     logging.info('Training model')
+    train_model_time = time.time()
+    es = EarlyStopping(
+        monitor='val_loss', mode='min',
+        restore_best_weights=True, min_delta=0.001, patience=20
+    )
     history = model.fit([X1_train, X2_train],
                         y_train,
                         validation_data=([X1_val, X2_val], y_val),
                         epochs=params.n_epochs,
-                        batch_size=params.batch_size)
+                        batch_size=params.batch_size,
+                        callbacks=[es])
+    train_model_time = time.time() - train_model_time
 
+
+    logging.info('Computing final metrics')
+
+    predictions = model.predict([X1_train, X2_train]).reshape(-1)
+    final_metrics = {}
+    final_metrics['train'] = {
+        'pearson': float(compute_pearson(y_train, predictions)),
+        'spearman': float(compute_spearman(y_train, predictions))
+    }
+
+    predictions = model.predict([X1_val, X2_val]).reshape(-1)
+    final_metrics['validation'] = {
+        'pearson': float(compute_pearson(y_val, predictions)),
+        'spearman': float(compute_spearman(y_val, predictions))
+    }
+    configs['final_metrics'] = final_metrics
+    time_log['train_model_time'] = train_model_time
+
+    
     logging.info('Saving trained model')
+    save_model_time = time.time()
     model.save(f'{params.outputdir}/{params.outputmodelname}')
+    save_model_time = time.time() - save_model_time
+    time_log['save_model_time'] = save_model_time
 
+
+    time_log['total_time'] = sum(time_log.values())
+
+
+    configs['time_log'] = time_log
     embed_history(configs, history)
+
+
     with open(f'{params.outputdir}/{params.outputmodelname}.metadata', 'w') as f:
         json.dump(configs, f, indent=2)
 
     print_train_history(history)
+    
+
+
 
 
 if __name__ == '__main__':
